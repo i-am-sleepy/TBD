@@ -1,0 +1,82 @@
+name: Android APK
+
+# Repo layout: android-port.zip (the port) and this file. The workflow downloads the upstream
+# project, applies the port on top, builds the APK, and builds the Termux kit.
+# Outputs: the3rdbirthday-unsigned.apk (zipaligned, NOT signed: sign it yourself) and
+# termux-kit.zip. No game code is in either: it is built on your phone from your own disc.
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "Upstream commit or branch ('master' = newest). Blank = the tested commit."
+        default: ""
+      sdl_ref:
+        description: "SDL3 branch or tag"
+        default: "release-3.2.x"
+  push:
+    paths: ["android-port.zip", ".github/workflows/android.yml"]
+
+env:
+  UPSTREAM: BasedYuki/the-3rd-birthday-recomp
+  TESTED: feb52d31f4f668003d80d0523c4e6de708a1b4d9
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: port }
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM }}
+          ref: ${{ github.event.inputs.upstream_ref || env.TESTED }}
+          path: src
+
+      - name: Apply the Android port
+        run: |
+          mkdir port-unzipped
+          unzip -q port/android-port.zip -d port-unzipped
+          cp -a port-unzipped/overlay/. src/
+          cd src
+          patch -p1 --no-backup-if-mismatch < ../port-unzipped/patches/upstream-edits.patch || {
+            echo "::error::The port does not apply to this upstream version (see the lines above). Send them to the port's author."
+            exit 1; }
+
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Android SDK pieces
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with: { gradle-version: "8.9" }
+
+      - name: Stage (fetch SDL3, copy data files, kit id)
+        working-directory: src
+        run: bash android/stage.sh "${{ github.event.inputs.sdl_ref || 'release-3.2.x' }}"
+
+      - name: Build APK
+        working-directory: src
+        run: gradle -p android assembleRelease --no-daemon --stacktrace
+
+      - name: Align (unsigned)
+        working-directory: src
+        run: |
+          APK=$(ls android/app/build/outputs/apk/release/*.apk | head -1)
+          echo "built: $APK"
+          "$ANDROID_HOME/build-tools/34.0.0/zipalign" -p -f 4 "$APK" the3rdbirthday-unsigned.apk
+          "$ANDROID_HOME/build-tools/34.0.0/zipalign" -c -p 4 the3rdbirthday-unsigned.apk && echo aligned
+
+      - name: Termux kit
+        working-directory: src
+        run: bash android/make_kit.sh termux-kit.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: the3rdbirthday-android
+          path: |
+            src/the3rdbirthday-unsigned.apk
+            src/termux-kit.zip
