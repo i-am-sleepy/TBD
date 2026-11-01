@@ -61,6 +61,24 @@ jobs:
         working-directory: src
         run: bash android/stage.sh "${{ github.event.inputs.sdl_ref || 'release-3.2.x' }}"
 
+      - name: Native build (lists ALL compile errors at once)
+        working-directory: src
+        run: |
+          set +e
+          CMAKE="$ANDROID_HOME/cmake/3.22.1/bin/cmake"; NINJA="$ANDROID_HOME/cmake/3.22.1/bin/ninja"
+          NDK="$ANDROID_HOME/ndk/27.2.12479018"
+          "$CMAKE" -S android/app/jni -B /tmp/nb -G Ninja -DCMAKE_MAKE_PROGRAM="$NINJA" \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-26 -DANDROID_STL=c++_static -DCMAKE_BUILD_TYPE=RelWithDebInfo > native.log 2>&1
+          code=$?
+          if [ $code -eq 0 ]; then "$NINJA" -C /tmp/nb -k 0 main >> native.log 2>&1; code=$?; fi
+          if [ $code -ne 0 ]; then
+            echo "================ ALL NATIVE ERRORS (copy from here) ================"
+            grep -E "error:|undefined symbol|CMake Error|fatal error" -A3 native.log | head -250
+            exit 1
+          fi
+          echo "native build OK"
+
       - name: Build APK
         working-directory: src
         run: |
@@ -80,7 +98,12 @@ jobs:
       - name: Keep the build log if it failed
         if: failure()
         uses: actions/upload-artifact@v4
-        with: { name: build-log, path: src/build.log }
+        with:
+          name: build-log
+          path: |
+            src/build.log
+            src/native.log
+          if-no-files-found: ignore
 
       - name: Align (unsigned)
         working-directory: src
