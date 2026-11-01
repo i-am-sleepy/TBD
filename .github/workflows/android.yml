@@ -63,7 +63,24 @@ jobs:
 
       - name: Build APK
         working-directory: src
-        run: gradle -p android assembleRelease --no-daemon --stacktrace
+        run: |
+          set +e
+          gradle -p android assembleRelease --no-daemon --stacktrace > build.log 2>&1
+          code=$?
+          if [ $code -ne 0 ]; then
+            echo "================ COMPILER / LINKER ERRORS (copy from here) ================"
+            grep -nE "FAILED: |error: |fatal error|undefined symbol|undefined reference|CMake Error|What went wrong" -A4 build.log | head -150
+            echo "================ last 40 lines ================"
+            tail -40 build.log
+          else
+            tail -5 build.log
+          fi
+          exit $code
+
+      - name: Keep the build log if it failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with: { name: build-log, path: src/build.log }
 
       - name: Align (unsigned)
         working-directory: src
